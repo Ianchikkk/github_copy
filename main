@@ -1,0 +1,144 @@
+from flask import Flask, render_template, request, redirect, url_for
+import sqlite3
+import uuid
+from werkzeug.utils import secure_filename
+from flask import redirect
+from flask import request
+import requests
+
+app = Flask(__name__)
+
+tool_icons = {
+        'Python':'🐍', 'Flask':'🌶️', 'HTML':'📄','CSS':'🎨',
+        'HTML/CSS':'🖌️', 'Git':'☠️','GitHub':'🐙','Telegram':'✈️',
+        'Телеграмм':'✈️', 'SQL':'📙', 'SQLite':'📔', 'JavaScript':'⚡',
+        'JS':'💣', 'Jinja':'🧩'
+    }
+
+# def port_db():
+#     conn = sqlite3.connect("portfolios.db", check_same_thread=False)
+#     conn.row_factory = sqlite3.Row
+#     cursor = conn.cursor()
+#     cursor.execute("""
+#         CREATE TABLE IF NOT EXISTS portfolio (
+#             id INTEGER PRIMARY KEY AUTOINCREMENT,
+#             uuid TEXT,
+#             name TEXT,
+#             bio TEXT,
+#             github TEXT,
+#             telegram TEXT,
+#             avatar TEXT,
+#             skills TEXT
+#         )
+#     """)
+#     conn.commit()
+#     conn.close()
+# port_db()
+
+# def test_user():
+#     conn = sqlite3.connect("portfolios.db", check_same_thread=False)
+#     conn.row_factory = sqlite3.Row
+#     cursor = conn.cursor()
+#     cursor.execute("INSERT INTO portfolio (uuid, name, bio, skills, avatar) VALUES (? ,? , ?, ?, ?)",('22', 'Даниил Колбасенко ', 'Frontend-разработчик', 'нету', 'https://drive.google.com/file/d/1Ybui5t4aLZx-ThdAIEKHPARZJmzLFVtU/view?usp=drive_link')
+#     )
+#     conn.commit()
+#     conn.close()
+
+
+
+@app.route('/')
+def index():
+    conn = sqlite3.connect('portfolios.db')
+    # conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM portfolio")
+    users_data = cursor.fetchall()
+    conn.close()
+    filter_skill = request.args.get('skill')
+    if filter_skill:
+        filter_skill = filter_skill.strip().lower()
+    else:
+        filter_skill = None
+
+    portfolios = []
+    for _, uuid, name, bio, __, ___, avatar, skills_str in users_data:
+        skills = [s.strip() for s in skills_str.split(',') if s.strip()]
+        skills_lower = [s.lower() for s in skills]
+        if filter_skill is None or filter_skill in skills_lower:
+            portfolios.append((uuid, name, avatar, bio, skills))
+        for s in skills_str.split(','):
+            s = s.strip()
+            if s:
+                skills.append(s)
+    print(portfolios)
+    return render_template('all_portfolios.html', portfolios=portfolios, current_skill=filter_skill or '', tool_icons= tool_icons)
+
+@app.route('/form')
+def show_form():
+    return render_template('form.html')
+
+@app.route('/generate', methods=['POST'])
+def generate():
+    print('yes')
+    form_data = request.form
+    name = form_data.get('name')
+    bio = form_data.get('bio')
+    telegram = form_data.get('telegram')
+    skills = form_data.get('skills')
+    raw_github = form_data.get('github', '')
+    github = raw_github.strip().replace('https://github.com/','').replace('/', '')
+    uid = str(uuid.uuid4())
+    avatar = request.files.get('avatar')
+    avatar_filename = ''
+    if avatar and avatar.filename:
+        filename = secure_filename(f"{uid}_{avatar.filename}")
+        avatar_path = f"static/uploads/{filename}"
+        avatar.save(avatar_path)
+        avatar_filename = avatar_path.replace("static/", "")
+    conn = sqlite3.connect('portfolios.db')
+    cursor = conn.cursor()
+    cursor.execute("""
+            INSERT INTO portfolio (uuid, name, bio, github, telegram, avatar, skills)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (uid, name, bio, github, telegram, avatar_filename, skills))
+    conn.commit()
+    conn.close()
+
+    return redirect(url_for('index'))
+
+
+@app.route('/portfolio/<uuid>')
+def view_portfolio(uuid):
+    conn = sqlite3.connect('portfolios.db')
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM portfolio WHERE uuid = ?", (uuid,))
+    person = cursor.fetchone()
+    conn.close()
+    if person is None:
+        return "Портфолио не найдено", 404
+
+    projects = []
+    try:
+        github_username = person['github']
+        if github_username:
+            api_url = f"https://api.github.com/users/{github_username}/repos"
+            response = requests.get(api_url)
+            if response.ok:
+                for repo in response.json()[:6]:
+                    projects.append({
+                        'title': repo.get('name'),
+                        'description': repo.get('description') or "Без описания",
+                        'link': repo.get('html_url')
+                    })
+    except Exception as e:
+        print(f"Ошибка GitHub: {e}")
+    skills_list = [s.strip() for s in person['skills'].split(',')] if person['skills'] else []
+
+    return render_template('portfolio_template.html', person=person, skills=skills_list, projects=projects, tool_icons=tool_icons)
+
+
+
+
+if __name__ == '__main__':
+    app.run(debug=True)
